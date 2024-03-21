@@ -19,6 +19,9 @@ public protocol LocalProcessDelegate: AnyObject {
     
     /// This method is invoked when data has been received from the local process that should be send to the terminal for processing.
     func dataReceived (slice: ArraySlice<UInt8>)
+    
+    /// This method is invoked when binary data has been received from the local process that should be send to the terminal for processing.
+    func binDataReceived (slice: ArraySlice<UInt8>)
 
     /// This method should return the window size to report to the local process.
     func getWindowSize () -> winsize
@@ -58,7 +61,13 @@ public class LocalProcess {
     
     /* The file descriptor used to communicate with the child process */
     public private(set) var childfd: Int32 = -1
-    
+
+    let binReadSize = 8*1024
+
+    /* The file descriptor used to communicate in binary with the child process */
+    public private(set) var binReadFd: Int32 = -1
+    public private(set) var binWriteFd: Int32 = -1
+
     /* The PID of our subprocess */
     public private(set) var shellPid: pid_t = 0
     var debugIO = false
@@ -66,18 +75,25 @@ public class LocalProcess {
     /* number of sent requests */
     var sendCount = 0
     var total = 0
+    
+    /* number of binary sent requests */
+    var binSendCount = 0
+    var binTotal = 0
 
     weak var delegate: LocalProcessDelegate?
     
     // Queue used to send the data received from the local process
     var dispatchQueue: DispatchQueue
+    var binDispatchQueue: DispatchQueue
     
     // The queue we use to read, it feels more interactive if we
     // read here and then post to the main thread.   Otherwise it feels
     // chunky.
     var readQueue: DispatchQueue
+    var binReadQueue: DispatchQueue
     
     var io: DispatchIO?
+    var bio: DispatchIO?
     
     /**
      * Initializes the LocalProcess runner and communication with the host happens via the provided
@@ -87,11 +103,13 @@ public class LocalProcess {
      * child process when calling the `send(dataReceived:)` delegate method.  If the value provided is `nil`,
      * then this will default to `DispatchQueue.main`
      */
-    public init (delegate: LocalProcessDelegate, dispatchQueue: DispatchQueue? = nil)
+    public init (delegate: LocalProcessDelegate, dispatchQueue: DispatchQueue? = nil, binDispatchQueue: DispatchQueue? = nil)
     {
         self.delegate = delegate
         self.dispatchQueue = dispatchQueue ?? DispatchQueue.main
         self.readQueue = DispatchQueue(label: "sender")
+        self.binDispatchQueue = binDispatchQueue ?? DispatchQueue.main
+        self.binReadQueue = DispatchQueue(label: "binSender")
     }
     
     /**
@@ -116,6 +134,37 @@ public class LocalProcess {
                 self.total += copyCount
                 if self.debugIO {
                     print ("[SEND-\(copy)] completed bytes=\(self.total)")
+                }
+                if errno != 0 {
+                    print ("Error writing data to the child, errno=\(errno)")
+                }
+            })
+        }
+
+    }
+
+    /**
+     * Sends the binary array slice to the local process using DispatchIO
+     * - Parameter data: The range of bytes to send to the child process
+     */
+    public func binSend (data: ArraySlice<UInt8>)
+    {
+        guard running else {
+            return
+        }
+        let copy = binSendCount
+        binSendCount += 1
+        data.withUnsafeBytes { ptr in
+            let ddata = DispatchData(bytes: ptr)
+            let copyCount = ddata.count
+            if debugIO {
+                print ("[SEND-\(copy)] Queuing data to client: \(data) ")
+            }
+
+            DispatchIO.write(toFileDescriptor: binWriteFd, data: ddata, runningHandlerOn: DispatchQueue.global(qos: .userInitiated), handler:  { dd, errno in
+                self.binTotal += copyCount
+                if self.debugIO {
+                    print ("[SEND-\(copy)] completed bytes=\(self.binTotal)")
                 }
                 if errno != 0 {
                     print ("Error writing data to the child, errno=\(errno)")
@@ -168,6 +217,42 @@ public class LocalProcess {
         io?.read(offset: 0, length: readSize, queue: readQueue, ioHandler: childProcessRead)
     }
     
+    /* Total number of binary bytes read */
+    var totalBinRead = 0
+    func binRead (done: Bool, data: DispatchData?, errno: Int32) {
+        guard let data else {
+            return
+        }
+        if debugIO {
+            totalBinRead += data.count
+            print ("[READ] count=\(data.count) received from host total=\(totalBinRead)")
+        }
+        
+        if data.count == 0 {
+            binReadFd = -1
+            return
+        }
+        var b: [UInt8] = Array.init(repeating: 0, count: data.count)
+        b.withUnsafeMutableBufferPointer({ ptr in
+            let _ = data.copyBytes(to: ptr)
+            if let dir = loggingDir {
+                let path = dir + "/log-\(logFileCounter)"
+                do {
+                    let dataCopy = Data (ptr)
+                    try dataCopy.write(to: URL.init(fileURLWithPath: path))
+                    logFileCounter += 1
+                } catch {
+                    // Ignore write error
+                    print ("Got error while logging data dump to \(path): \(error)")
+                }
+            }
+        })
+        binDispatchQueue.sync {
+            delegate?.binDataReceived(slice: b[...])
+        }
+        bio?.read(offset: 0, length: binReadSize, queue: binReadQueue, ioHandler: binRead)
+    }
+    
     var childMonitor: DispatchSourceProcess?
     
     func processTerminated ()
@@ -209,7 +294,7 @@ public class LocalProcess {
             env = environment!
         }
         
-        if let (shellPid, childfd) = PseudoTerminalHelpers.fork(andExec: executable, args: shellArgs, env: env, desiredWindowSize: &size) {
+        if let (shellPid, childfd, binfd) = PseudoTerminalHelpers.fork(andExec: executable, args: shellArgs, env: env, desiredWindowSize: &size) {
             childMonitor = DispatchSource.makeProcessSource(identifier: shellPid, eventMask: .exit, queue: dispatchQueue)
             if let cm = childMonitor {
                 if #available(macOS 10.12, *) {
@@ -221,8 +306,13 @@ public class LocalProcess {
             }
             
             running = true
+            
             self.childfd = childfd
             self.shellPid = shellPid
+            self.binReadFd = binfd.0
+            self.binWriteFd = binfd.1
+            
+            // Normal io
             io = DispatchIO(type: .stream, fileDescriptor: childfd, queue: dispatchQueue, cleanupHandler: { x in })
             guard let io else {
                 return
@@ -230,6 +320,15 @@ public class LocalProcess {
             io.setLimit(lowWater: 1)
             io.setLimit(highWater: readSize)
             io.read(offset: 0, length: readSize, queue: readQueue, ioHandler: childProcessRead)
+            
+            // Binary io
+            bio = DispatchIO(type: .stream, fileDescriptor: binReadFd, queue: binDispatchQueue, cleanupHandler: { x in })
+            guard let bio else {
+                return
+            }
+            bio.setLimit(lowWater: 1)
+            bio.setLimit(highWater: binReadSize)
+            bio.read(offset: 0, length: binReadSize, queue: binReadQueue, ioHandler: binRead)
         }
     }
 

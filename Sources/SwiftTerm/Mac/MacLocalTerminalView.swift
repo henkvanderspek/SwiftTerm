@@ -177,6 +177,13 @@ open class LocalProcessTerminalView: TerminalView, TerminalViewDelegate, LocalPr
     }
     
     /**
+     * Implements the LocalProcessDelegate.binDataReceived method
+     */
+    open func binDataReceived(slice: ArraySlice<UInt8>) {
+        // Base class does nothing
+    }
+
+    /**
      * Implements the LocalProcessDelegate.getWindowSize method
      */
     open func getWindowSize () -> winsize

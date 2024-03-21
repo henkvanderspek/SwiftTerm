@@ -34,6 +34,9 @@ public class HeadlessTerminal : TerminalDelegate, LocalProcessDelegate {
         terminal.feed(buffer: slice)
     }
     
+    public func binDataReceived(slice: ArraySlice<UInt8>) {
+    }
+    
     func send(data: ArraySlice<UInt8>) {
         process.send (data: data)
     }

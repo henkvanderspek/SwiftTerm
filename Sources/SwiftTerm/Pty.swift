@@ -65,8 +65,14 @@ public class PseudoTerminalHelpers {
      *
      * - Returns: nil on error, or a tuple containing the process ID, and the file descriptor to the primary side of the newly created pseudo-terminal.
      */
-    public static func fork (andExec: String, args: [String], env: [String], desiredWindowSize: inout winsize) -> (pid: pid_t, masterFd: Int32)?
+    public static func fork (andExec: String, args: [String], env: [String], desiredWindowSize: inout winsize) -> (pid: pid_t, masterFd: Int32, binFd: (Int32, Int32))?
     {
+        var binfd = Array<Int32>(repeating: 0, count: 2);
+        assert(pipe(&binfd)>=0);
+        var flags = fcntl(binfd[1], F_GETFD);
+        flags &= ~FD_CLOEXEC;
+        assert(fcntl(binfd[1], F_SETFD, flags)>=0);
+        
         var master: Int32 = 0
         
         let pid = forkpty(&master, nil, nil, &desiredWindowSize)
@@ -75,12 +81,12 @@ public class PseudoTerminalHelpers {
         }
         if pid == 0 {
             withArrayOfCStrings(args, { pargs in
-                withArrayOfCStrings(env, { penv in
+                withArrayOfCStrings(env + ["BINOUT=\(binfd[1])"], { penv in
                     let _ = execve(andExec, pargs, penv)
                 })
             })
         }
-        return (pid, master)
+        return (pid, master, (binfd[0], binfd[1]))
     }
     
     /**

@@ -69,10 +69,13 @@ public class PseudoTerminalHelpers {
     {
         var binfd = Array<Int32>(repeating: 0, count: 2);
         assert(pipe(&binfd)>=0);
-        var flags = fcntl(binfd[1], F_GETFD);
+        var flags = fcntl(binfd[0], F_GETFD);
         flags &= ~FD_CLOEXEC;
-        assert(fcntl(binfd[1], F_SETFD, flags)>=0);
-        
+        assert(fcntl(binfd[0], F_SETFD, flags)>=0);
+        var flags2 = fcntl(binfd[1], F_GETFD);
+        flags2 &= ~FD_CLOEXEC;
+        assert(fcntl(binfd[1], F_SETFD, flags2)>=0);
+
         var master: Int32 = 0
         
         let pid = forkpty(&master, nil, nil, &desiredWindowSize)
@@ -81,7 +84,7 @@ public class PseudoTerminalHelpers {
         }
         if pid == 0 {
             withArrayOfCStrings(args, { pargs in
-                withArrayOfCStrings(env + ["BINOUT=\(binfd[1])"], { penv in
+                withArrayOfCStrings(env + ["BININ=\(binfd[0])", "BINOUT=\(binfd[1])"], { penv in
                     let _ = execve(andExec, pargs, penv)
                 })
             })

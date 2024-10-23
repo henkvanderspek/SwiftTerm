@@ -158,13 +158,13 @@ public class LocalProcess {
             let ddata = DispatchData(bytes: ptr)
             let copyCount = ddata.count
             if debugIO {
-                print ("[SEND-\(copy)] Queuing data to client: \(data) ")
+                print ("[BINSEND-\(copy)] Queuing data to client: \(data) ")
             }
 
             DispatchIO.write(toFileDescriptor: binWriteFd, data: ddata, runningHandlerOn: DispatchQueue.global(qos: .userInitiated), handler:  { dd, errno in
                 self.binTotal += copyCount
                 if self.debugIO {
-                    print ("[SEND-\(copy)] completed bytes=\(self.binTotal)")
+                    print ("[BINSEND-\(copy)] completed bytes=\(self.binTotal)")
                 }
                 if errno != 0 {
                     print ("Error writing data to the child, errno=\(errno)")
@@ -225,7 +225,7 @@ public class LocalProcess {
         }
         if debugIO {
             totalBinRead += data.count
-            print ("[READ] count=\(data.count) received from host total=\(totalBinRead)")
+            print ("[BINREAD] count=\(data.count) received from host total=\(totalBinRead)")
         }
         
         if data.count == 0 {

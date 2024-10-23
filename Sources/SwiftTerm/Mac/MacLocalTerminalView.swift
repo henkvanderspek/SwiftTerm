@@ -133,19 +133,19 @@ open class LocalProcessTerminalView: TerminalView, TerminalViewDelegate, LocalPr
         process.send (data: data)
     }
     
-    open var isRunning: Bool {
+    public var isRunning: Bool {
         process.running
     }
     
-    open func closeBinaryChannelForReading() {
+    public func closeBinaryChannelForReading() {
         close(process.binReadFd)
     }
     
-    open func binSend(data: ArraySlice<UInt8>) {
+    public func binSend(data: ArraySlice<UInt8>) {
         process.binSend(data: data)
     }
     
-    open func terminate() {
+    public func terminate() {
         process.terminate()
     }
     
